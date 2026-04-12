@@ -19,7 +19,7 @@ Market_Safety = 1
 import warnings
 warnings.filterwarnings("ignore")
 
-import sys, os ,subprocess, importlib
+import sys, os, subprocess, importlib, hashlib
 import threading
 excel_lock = threading.Lock()
 
@@ -255,7 +255,54 @@ def Shoonya_login():
             password = password[:len(password)-2]
         
         LoginMethod = str(Credential_sheet.range("B4").value)
-        if (LoginMethod == "New_Session"):
+        if (LoginMethod == "OAuth"):
+            AuthCode = str(Credential_sheet.range("B13").value)
+            # According to get_oauth_code.py: B2 is User ID, B6 is App Key (API Key)
+            userid = str(Credential_sheet.range("B2").value)
+            app_key = str(Credential_sheet.range("B6").value)
+            api_secret = str(Credential_sheet.range("B7").value)
+
+            checksum_input = f"{app_key}{api_secret}{AuthCode}"
+            checksum = hashlib.sha256(checksum_input.encode()).hexdigest()
+
+            url = "https://api.shoonya.com/NorenWClientAPI/GenAcsTok"
+            payload = {"code": AuthCode, "checksum": checksum}
+            payload_str = "jData=" + json.dumps(payload)
+            headers = {"Content-Type": "text/plain"}
+
+            res = requests.post(url, data=payload_str, headers=headers)
+            resDict = res.json()
+
+            if resDict.get("stat") == "Ok":
+                token = resDict.get("access_token")
+                api.set_session(userid=userid, password=password, usertoken=token)
+
+                get_limits = api.get_limits()
+                if get_limits.get("stat") == "Ok":
+                    client_name = resDict.get("uname", userid)
+                    Credential_sheet.range("c2").value = (
+                        "Login Successful (OAuth), Welcome "
+                        + client_name
+                        + "\nGenerated Token = ("
+                        + str(token)
+                        + ")"
+                    )
+                    isConnected = 1
+                    Text2Speech("Login Successful, Welcome " + str(client_name))
+                    Credential_sheet.range("c2").color = (118, 224, 280)
+                else:
+                    Credential_sheet.range("c2").value = "OAuth Login Failed: " + str(
+                        get_limits.get("emsg")
+                    )
+                    Text2Speech("Login unsuccessful")
+                    Credential_sheet.range("c2").color = (255, 0, 0)
+            else:
+                error_msg = resDict.get("emsg", "Unknown error")
+                Credential_sheet.range("c2").value = "OAuth Error: " + error_msg
+                Text2Speech("Login unsuccessful")
+                Credential_sheet.range("c2").color = (255, 0, 0)
+
+        elif (LoginMethod == "New_Session"):
             TotpKey = str(Credential_sheet.range('B5').value)
             index = TotpKey.find(".")
             if index != -1:
