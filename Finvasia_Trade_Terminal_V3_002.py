@@ -72,6 +72,145 @@ import pyttsx3
 import requests
 from NorenRestApiPy.NorenApi import NorenApi
 
+
+class ShoonyaApiPy(NorenApi):
+    def __init__(self):
+        NorenApi.__init__(
+            self,
+            host="https://api.shoonya.com/NorenWClientTP/",
+            websocket="wss://api.shoonya.com/NorenWSTP/",
+        )
+        self.__is_oauth = False
+        self.__access_token = None
+
+    def set_oauth_session(self, userid, password, usertoken):
+        self.set_session(userid, password, usertoken)
+        self.__is_oauth = True
+        self.__access_token = usertoken
+        return True
+
+    def __send_oauth_request(self, endpoint, payload_dict, method="POST"):
+        url = f"https://api.shoonya.com{endpoint}"
+        payload_str = "jData=" + json.dumps(payload_dict)
+        headers = {
+            "Content-Type": "text/plain",
+            "Authorization": f"Bearer {self.__access_token}",
+        }
+        res = requests.request(method, url, data=payload_str, headers=headers)
+        try:
+            return res.json()
+        except Exception:
+            return None
+
+    def get_limits(self):
+        if not self.__is_oauth:
+            return super().get_limits()
+        payload = {"uid": self._NorenApi__username, "actid": self._NorenApi__username}
+        return self.__send_oauth_request("/NorenWClientAPI/Limits", payload)
+
+    def get_quotes(self, exchange, token):
+        if not self.__is_oauth:
+            return super().get_quotes(exchange, token)
+        payload = {"uid": self._NorenApi__username, "exch": exchange, "token": token}
+        return self.__send_oauth_request("/NorenWClientAPI/GetQuotes", payload)
+
+    def get_positions(self):
+        if not self.__is_oauth:
+            return super().get_positions()
+        payload = {"uid": self._NorenApi__username, "actid": self._NorenApi__username}
+        return self.__send_oauth_request("/NorenWClientAPI/PositionBook", payload)
+
+    def get_holdings(self, product_type="C"):
+        if not self.__is_oauth:
+            return super().get_holdings()
+        payload = {
+            "uid": self._NorenApi__username,
+            "actid": self._NorenApi__username,
+            "prd": product_type,
+        }
+        return self.__send_oauth_request("/NorenWClientAPI/Holdings", payload)
+
+    def searchscrip(self, exchange, searchtext):
+        if not self.__is_oauth:
+            return super().searchscrip(exchange, searchtext)
+        payload = {
+            "uid": self._NorenApi__username,
+            "stext": searchtext,
+            "exch": exchange,
+        }
+        return self.__send_oauth_request("/NorenWClientAPI/SearchScrip", payload)
+
+    def get_order_book(self):
+        if not self.__is_oauth:
+            return super().get_order_book()
+        payload = {"uid": self._NorenApi__username}
+        return self.__send_oauth_request("/NorenWClientAPI/OrderBook", payload)
+
+    def place_order(
+        self,
+        buy_or_sell,
+        product_type,
+        exchange,
+        tradingsymbol,
+        quantity,
+        discloseqty,
+        price_type,
+        price=0.0,
+        trigger_price=None,
+        retention="DAY",
+        amo="NO",
+        remarks=None,
+        bookloss_price=0.0,
+        bookprofit_price=0.0,
+        trail_price=0.0,
+    ):
+        if not self.__is_oauth:
+            return super().place_order(
+                buy_or_sell,
+                product_type,
+                exchange,
+                tradingsymbol,
+                quantity,
+                discloseqty,
+                price_type,
+                price,
+                trigger_price,
+                retention,
+                amo,
+                remarks,
+                bookloss_price,
+                bookprofit_price,
+                trail_price,
+            )
+
+        payload = {
+            "uid": self._NorenApi__username,
+            "actid": self._NorenApi__username,
+            "trantype": buy_or_sell,
+            "prd": product_type,
+            "exch": exchange,
+            "tsym": tradingsymbol,
+            "qty": str(quantity),
+            "dscqty": str(discloseqty),
+            "prctyp": price_type,
+            "prc": str(price),
+            "ret": retention,
+            "ordersource": "API",
+        }
+        if trigger_price:
+            payload["trgprc"] = str(trigger_price)
+        if remarks:
+            payload["remarks"] = remarks
+
+        return self.__send_oauth_request("/NorenWClientAPI/PlaceOrder", payload)
+
+    def cancel_order(self, orderno):
+        if not self.__is_oauth:
+            return super().cancel_order(orderno)
+        payload = {"uid": self._NorenApi__username, "norenordno": orderno}
+        return self.__send_oauth_request("/NorenWClientAPI/CancelOrder", payload)
+
+
 try:
     from GetIVGreeks import DayCountType, ExpType, TryMatchWith, CalcIvGreeks
 except ImportError:
@@ -224,19 +363,7 @@ def Shoonya_login():
         logger = logging.getLogger()
         logger.setLevel(logging.INFO)
 
-        try:
-            class ShoonyaApiPy(NorenApi):
-                def __init__(self):
-                    NorenApi.__init__(self, host='https://api.shoonya.com/NorenWClientTP/', websocket='wss://api.shoonya.com/NorenWSTP/', eodhost='https://api.shoonya.com/chartApi/getdata/')
-
-            api = ShoonyaApiPy()
-        except Exception as e:
-            class ShoonyaApiPy(NorenApi):
-                def __init__(self):
-                    NorenApi.__init__(self, host='https://api.shoonya.com/NorenWClientTP/', websocket='wss://api.shoonya.com/NorenWSTP/')
-
-            api = ShoonyaApiPy()
-            pass
+        api = ShoonyaApiPy()
 
 
         TelegramBotCredential = str(Credential_sheet.range("b10").value)
@@ -275,7 +402,7 @@ def Shoonya_login():
 
             if resDict.get("stat") == "Ok":
                 token = resDict.get("access_token")
-                api.set_session(userid=userid, password=password, usertoken=token)
+                api.set_oauth_session(userid=userid, password=password, usertoken=token)
 
                 get_limits = api.get_limits()
                 if get_limits.get("stat") == "Ok":
@@ -3364,7 +3491,7 @@ def StartThread():
         print(Message)
 
 print(f"Python Trader Excel Based Terminal program initialised")
-if Shoonya_login() == 1:
+if __name__ == "__main__" and Shoonya_login() == 1:
     LoadInstrument_token()
 
     # Early fetch so user sees positions status even before WebSocket connects
