@@ -20,6 +20,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import sys, os ,subprocess, importlib
+import threading
+excel_lock = threading.Lock()
 
 def ensure(pkgs):
     for name, pip_name in pkgs:
@@ -54,7 +56,7 @@ import time
 import json
 import sys
 import platform
-from datetime import datetime as dt, timedelta, time, date
+from datetime import datetime as dt, timedelta, time as dt_time, date
 from time import sleep
 import logging
 from threading import Thread
@@ -95,7 +97,7 @@ OptionChain_template = []
 subs_lst = []
 subs_pending_lst = []
 
-Indices_To_check_instrument_Sheet = ["NIFTY","BANKNIFTY","SENSEX" "SENSEX50", "BANKEX"]
+Indices_To_check_instrument_Sheet = ["NIFTY","BANKNIFTY","SENSEX", "SENSEX50", "BANKEX"]
 IndexList = ["NIFTY", "BANKNIFTY", "FINNIFTY","INDIAVIX","MIDCPNIFTY", "SENSEX", "SENSEX50", "BANKEX"]
 Token_list = {'NIFTY':26000,'MIDCPNIFTY':26074,'BANKNIFTY':26009,'FINNIFTY':26037,'INDIAVIX':26017, 'SENSEX':1, 'SENSEX50':47, 'BANKEX':12}
 
@@ -106,6 +108,21 @@ try:
 except Exception as e:
     TerminalSheetName = "Finvasia_Trade_Terminal_v3.xlsm"
     pass
+
+def ensure_sheet(book, name):
+    for _ in range(3):
+        try:
+            with excel_lock:
+                try:
+                    return book.sheets[name]
+                except Exception:
+                    try:
+                        return book.sheets.add(name)
+                    except ValueError:
+                        return book.sheets[name]
+        except Exception:
+            time.sleep(0.2)
+    return book.sheets[name]
 
 
 def Text2Speech(Text):
@@ -137,7 +154,44 @@ def Shoonya_login():
     global userid, client_name
     client_name = ""
     isConnected = 0
-    excel_name = xw.Book(TerminalSheetName)
+    try:
+        excel_name = xw.Book(TerminalSheetName)
+    except Exception as e:
+        try:
+            excel_name = xw.apps.active.books[TerminalSheetName]
+        except Exception as e2:
+            try:
+                cnt = 0
+                for app in xw.apps:
+                    for b in app.books:
+                        if b.name == TerminalSheetName:
+                            cnt += 1
+                if cnt > 1:
+                    active = xw.apps.active
+                    for app in xw.apps:
+                        for b in app.books:
+                            if b.name == TerminalSheetName and app != active:
+                                try:
+                                    b.save()
+                                except Exception as e3:
+                                    pass
+                                try:
+                                    b.close()
+                                except Exception as e4:
+                                    pass
+                    excel_name = active.books[TerminalSheetName]
+                else:
+                    found = None
+                    for app in xw.apps:
+                        for b in app.books:
+                            if b.name == TerminalSheetName:
+                                found = b
+                    if found is None:
+                        excel_name = xw.Book(TerminalSheetName)
+                    else:
+                        excel_name = found
+            except Exception as e5:
+                excel_name = xw.Book(TerminalSheetName)
     Credential_sheet = excel_name.sheets["User_Credential"]
     
     Credential_sheet.range('a1').value = 'Welcome To Python Trader'
@@ -317,10 +371,11 @@ def event_handler_quote_update(inmessage):
         "ltq",
         "ltp",
         "bp1",
+        "bq1",
         "sp1",
+        "sq1",
         "ap",
         "oi",
-        "ap",
         "poi",
         "toi",
     ]
@@ -545,18 +600,18 @@ def start_Trade_Terminal():
     global Telegram_Message, Voice_Message    
     global subs_lst
     excel_TT = xw.Book(TerminalSheetName)
-    tt = excel_TT.sheets("Trade_Terminal")
-    tt.range("a2:d2").value  = 0
-    tt.range("q4:s1000").value  = None
-    tt.range("u4:w1000").value  = None
-    tt.range("aa4:ac1000").value  = None
-    tt.range(f"a3:ac3").value = [ "Symbol", "Open", "High", "Low", "Close", "VWAP", "Best Buy Price","Best Sell Price","Volume","OI", "LTP",
-                                "Percentage change", "Qty", "BUY/SELL", "Entry Signal","Entry Limit Price", "Entry Done @","Entry Order ID", 
-                                "Entry Remarks","Exit Signal","Exit Done @","Exit Order ID","Exit Remarks", "Target","SL" ,"Trail Enable",
-                                "Latest SL","Trade Status","PnL"]
-                                
-    tt.range('k1').value =  'PYTHON TRADER'
-    tt.range('k1').color = (46,132,198)  
+    tt = ensure_sheet(excel_TT, "Trade_Terminal")
+    with excel_lock:
+        tt.range("a2:d2").value  = 0
+        tt.range("q4:s1000").value  = None
+        tt.range("u4:w1000").value  = None
+        tt.range("aa4:ac1000").value  = None
+        tt.range(f"a3:ac3").value = [ "Symbol", "Open", "High", "Low", "Close", "VWAP", "Best Buy Price","Best Sell Price","Volume","OI", "LTP",
+                                    "Percentage change", "Qty", "BUY/SELL", "Entry Signal","Entry Limit Price", "Entry Done @","Entry Order ID", 
+                                    "Entry Remarks","Exit Signal","Exit Done @","Exit Order ID","Exit Remarks", "Target","SL" ,"Trail Enable",
+                                    "Latest SL","Trade Status","PnL"]
+        tt.range('k1').value =  'PYTHON TRADER'
+        tt.range('k1').color = (46,132,198)  
     Trade_Mode = str(tt.range('s2').value).upper()
     
     AlertMessage = Trade_Mode + " trade mode enabled"
@@ -1345,6 +1400,77 @@ def get_position():
         print(f"Error in get_position: {e}")
     return df_positions,day_m2m 
 
+def append_positions_to_trade_terminal(df_positions):
+    """
+    Append current live positions to the bottom of Trade_Terminal sheet.
+    - Maps key fields for visibility without altering existing formulas.
+    - Marks rows with a tag in column AD = 'LivePosition' to avoid confusion.
+
+    Columns written:
+      A: Symbol with exchange prefix
+      N: BUY/SELL (based on Net Quantity sign)
+      O: Entry rule tag ('Import_Live')
+      Q: Avg Price (entry reference)
+      K: Last Price (LTP)
+      AB: Status ('Active')
+      AC: P&L snapshot computed as (LTP - Avg) * NetQty
+      AD: Tag ('LivePosition')
+    """
+    try:
+        excel_TT = xw.Book(TerminalSheetName)
+        tt = ensure_sheet(excel_TT, "Trade_Terminal")
+
+        # Find last used row in column A
+        last_row = tt.range('A' + str(tt.cells.last_cell.row)).end('up').row
+        start_row = last_row + 1
+
+        # Pre-read existing tags to avoid duplicating on re-run
+        try:
+            existing_tags = tt.range('AD:AD').value
+        except Exception:
+            existing_tags = []
+
+        df_positions = df_positions[df_positions['Net Quantity'] != 0].reset_index(drop=True)
+        for i in range(len(df_positions)):
+            row = df_positions.iloc[i]
+            try:
+                net_qty = int(row.get('Net Quantity', 0))
+            except Exception:
+                net_qty = 0
+            side = 'Buy' if net_qty > 0 else 'Sell'
+
+            avg_price = convert_to_float(row.get('Avg Price'))
+            last_price = convert_to_float(row.get('Last Price'))
+            pnl = (last_price - avg_price) * net_qty
+
+            exchange = str(row.get('Exchange', '')).upper()
+            symbol = str(row.get('Symbol', ''))
+            symbol_cell = f"{exchange}:{symbol}" if exchange and symbol else symbol or exchange
+
+            target_row = start_row + i
+
+            # If AD already has 'LivePosition' at this row, skip re-writing
+            if isinstance(existing_tags, list):
+                tag_at_row = None
+                try:
+                    tag_at_row = existing_tags[target_row - 1]
+                except Exception:
+                    tag_at_row = None
+                if tag_at_row == 'LivePosition':
+                    continue
+
+            tt.range(f"A{target_row}").value = symbol_cell
+            tt.range(f"M{target_row}").value = abs(net_qty)
+            tt.range(f"N{target_row}").value = side
+            tt.range(f"O{target_row}").value = "Import_Live"
+            tt.range(f"Q{target_row}").value = avg_price
+            tt.range(f"K{target_row}").value = last_price
+            tt.range(f"AB{target_row}").value = "Active"
+            tt.range(f"AC{target_row}").value = pnl
+            tt.range(f"AD{target_row}").value = "LivePosition"
+    except Exception as e:
+        print(f"Error appending positions to Trade_Terminal: {e}")
+
 def LoadInstrument_token(Token_4_Exchange = ['NSE','BSE','NFO', 'BFO','CDS','MCX']):
     global df_ins_NSE, df_ins_BSE, df_ins_NFO, df_ins_BFO,df_ins_CDS, df_ins_MCX
     global api
@@ -1467,8 +1593,8 @@ def start_optionchain():
     
     global subs_lst
     excel_name = xw.Book(TerminalSheetName)
-    oci = excel_name.sheets("Option_Chain_Input")
-    Option_Chain_Output = excel_name.sheets("Option_Chain_Output")
+    oci = ensure_sheet(excel_name, "Option_Chain_Input")
+    Option_Chain_Output = ensure_sheet(excel_name, "Option_Chain_Output")
     
 
     oci.range("F3").value = None
@@ -2023,7 +2149,7 @@ def start_optionchain():
                                 
                                 FromDateTime = dt.now() 
                                 if Exchange == 'NFO':
-                                    if dt.now().time() > time(15, 30, 0):
+                                    if dt.now().time() > dt_time(15, 30, 0):
                                         FromDateTime = dt(dt.now().year, dt.now().month,dt.now().day, 15, 30, 0)
                                     
                                     
@@ -2750,7 +2876,7 @@ def start_optionchain_Pro():
                                 
                                 FromDateTime = dt.now() 
                                 if Exchange == 'NFO':
-                                    if dt.now().time() > time(15, 30, 0):
+                                    if dt.now().time() > dt_time(15, 30, 0):
                                         FromDateTime = dt(dt.now().year, dt.now().month,dt.now().day, 15, 30, 0)
                                     
                                     
@@ -2931,11 +3057,13 @@ df_openPosition = pd.DataFrame()
 def start_Open_Position():
     
     excel_op = xw.Book(TerminalSheetName)
-    op_op = excel_op.sheets("OpenPosition")
-    op_tt = excel_op.sheets("Trade_Terminal")
-    op_hold = excel_op.sheets("Holdings")
-    op_config = excel_op.sheets("Config")
-    op_ob = excel_op.sheets("OrderBook")
+    op_op = ensure_sheet(excel_op, "OpenPosition")
+    op_tt = ensure_sheet(excel_op, "Trade_Terminal")
+    op_hold = ensure_sheet(excel_op, "Holdings")
+    op_config = ensure_sheet(excel_op, "Config")
+    op_ob = ensure_sheet(excel_op, "OrderBook")
+    with excel_lock:
+        op_hold.range("a1:w500").value  = None
     
     isTelegramEnable = False
     if op_config.range("b3").value == True:
@@ -3119,6 +3247,39 @@ def getholdings():
         df_holding = pd.concat([df_holding, pd.DataFrame.from_dict(dic_data,orient='index').T],ignore_index = True)
     return df_holding
     
+
+def start_Live_Positions():
+    excel_lp = xw.Book(TerminalSheetName)
+    lp = ensure_sheet(excel_lp, "Live_Positions")
+    cfg = ensure_sheet(excel_lp, "Config")
+    with excel_lock:
+        try:
+            lp.range("A1:Z1000").value = None
+        except Exception:
+            pass
+    while True:
+        try:
+            enable = cfg.range("b7").value
+            refresh = cfg.range("b8").value
+            if enable is not True:
+                sleep(int(refresh) if isinstance(refresh, (int, float)) else 1)
+                continue
+            df_positions, day_m2m = get_position()
+            with excel_lock:
+                if isinstance(df_positions, pd.DataFrame) and len(df_positions) > 0:
+                    lp.range("A1").options(index=False, header=True).value = df_positions
+                    try:
+                        lp.range("L1").value = "Day MTM"
+                        lp.range("M1").value = day_m2m
+                    except Exception:
+                        pass
+                else:
+                    lp.range("A1:Z1000").value = None
+            sleep(int(refresh) if isinstance(refresh, (int, float)) else 1)
+        except Exception:
+            pass
+
+
 def StartThread():
     excel_name = xw.Book(TerminalSheetName)
     Config_sheet = excel_name.sheets['Config']
@@ -3136,6 +3297,9 @@ def StartThread():
         
         if Config_sheet.range("b5").value == True:
             threads.append(Thread(target=start_optionchain_Pro))
+        
+        if Config_sheet.range("b7").value == True:
+            threads.append(Thread(target=start_Live_Positions))
             
         if len(threads) != 0 :    
             # Func1 and Func2 run in separate threads
@@ -3155,6 +3319,18 @@ def StartThread():
 print(f"Python Trader Excel Based Terminal program initialised")
 if Shoonya_login() == 1:
     LoadInstrument_token()
+
+    # Early fetch so user sees positions status even before WebSocket connects
+    # try:
+    #     print("Fetching live positions after login...")
+    #     df_positions, day_m2m = get_position()
+    #     if isinstance(df_positions, pd.DataFrame) and len(df_positions) > 0:
+    #         append_positions_to_trade_terminal(df_positions)
+    #         print("Appended live positions to Trade_Terminal (pre-WebSocket).")
+    #     else:
+    #         print("No live positions to display (pre-WebSocket).")
+    # except Exception as e:
+    #     print(f"Unable to fetch/append live positions after login: {e}")
     
     
     api.start_websocket(
@@ -3166,9 +3342,23 @@ if Shoonya_login() == 1:
 
     while feed_opened == False:
         print("Trying to connect WebSocket...")
-        pass
+        sleep(0.5)
 
     print("Connected to WebSocket...")
+
+    # Start a background worker to append current live positions after a delay
+    def _append_live_positions_once(delay_sec=20):
+        try:
+            sleep(delay_sec)
+            df_positions, _ = get_position()
+            if isinstance(df_positions, pd.DataFrame) and len(df_positions) > 0:
+                append_positions_to_trade_terminal(df_positions)
+                print("✅ Appended live positions to Trade_Terminal (delayed).")
+            else:
+                print("No live position to show (delayed).")
+        except Exception as e:
+            print(f"⚠️ Background fetch/append live positions failed: {e}")
+    Thread(target=_append_live_positions_once, args=(20,), daemon=True).start()
 
     StartThread()
     print("Enjoy the automation...")
