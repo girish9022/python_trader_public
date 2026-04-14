@@ -19,8 +19,7 @@ Market_Safety = 1
 import warnings
 warnings.filterwarnings("ignore")
 
-import sys, os, subprocess, importlib, hashlib, json, requests
-import threading
+import sys, os, subprocess, importlib, hashlib, json, requests, threading
 excel_lock = threading.Lock()
 
 def ensure(pkgs):
@@ -45,16 +44,14 @@ packages = [
     ("numpy", "numpy"),
     ("xlwings", "xlwings"),
     ("pyttsx3", "pyttsx3"),
-    ("scipy", "scipy"),   # 👈 NEW
-    ("NorenRestApiPy", "./NorenRestApiPy-0.0.22-py2.py3-none-any.whl"),  # local wheel
+    ("scipy", "scipy"),
+    ("NorenRestApiPy", "NorenRestApiOAuth"), # Updated to OAuth version
 ]
 
 ensure(packages)
 
 
 import time
-import json
-import sys
 import platform
 from datetime import datetime as dt, timedelta, time as dt_time, date
 from time import sleep
@@ -69,7 +66,6 @@ import pandas_ta as ta
 import pyotp
 import xlwings as xw
 import pyttsx3
-import requests
 from NorenRestApiPy.NorenApi import NorenApi
 
 
@@ -77,138 +73,38 @@ class ShoonyaApiPy(NorenApi):
     def __init__(self):
         NorenApi.__init__(
             self,
-            host="https://api.shoonya.com/NorenWClientTP/",
+            host="https://api.shoonya.com/NorenWClientAPI/",
             websocket="wss://api.shoonya.com/NorenWSTP/",
         )
-        self.__is_oauth = False
-        self.__access_token = None
 
-    def set_oauth_session(self, userid, password, usertoken):
-        self.set_session(userid, password, usertoken)
-        self.__is_oauth = True
-        self.__access_token = usertoken
-        return True
+    def login(self, userid, password, twoFA, vendor_code, api_secret, imei, access_type=None):
+        # Restore login method since it is commented out in the library
+        config = self._NorenApi__service_config
+        url = f"{config['host']}{config['routes']['authorize']}"
+        pwd = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        u_appkey = '{0}|{1}'.format(userid, api_secret)
+        appkey = hashlib.sha256(u_appkey.encode('utf-8')).hexdigest()
 
-    def __send_oauth_request(self, endpoint, payload_dict, method="POST"):
-        url = f"https://api.shoonya.com{endpoint}"
-        payload_str = "jData=" + json.dumps(payload_dict)
-        headers = {
-            "Content-Type": "text/plain",
-            "Authorization": f"Bearer {self.__access_token}",
-        }
-        res = requests.request(method, url, data=payload_str, headers=headers)
-        try:
-            return res.json()
-        except Exception:
-            return None
+        values = { "source": access_type or "API" , "apkversion": "1.0.0"}
+        values["uid"]       = userid
+        values["pwd"]       = pwd
+        values["factor2"]   = twoFA
+        values["vc"]        = vendor_code
+        values["appkey"]    = appkey
+        values["imei"]      = imei
 
-    def get_limits(self):
-        if not self.__is_oauth:
-            return super().get_limits()
-        payload = {"uid": self._NorenApi__username, "actid": self._NorenApi__username}
-        return self.__send_oauth_request("/NorenWClientAPI/Limits", payload)
+        payload = 'jData=' + json.dumps(values)
+        res = requests.post(url, data=payload)
+        resDict = json.loads(res.text)
+        if resDict.get('stat') != 'Ok':
+            return resDict
 
-    def get_quotes(self, exchange, token):
-        if not self.__is_oauth:
-            return super().get_quotes(exchange, token)
-        payload = {"uid": self._NorenApi__username, "exch": exchange, "token": token}
-        return self.__send_oauth_request("/NorenWClientAPI/GetQuotes", payload)
+        self._NorenApi__username   = userid
+        self._NorenApi__accountid  = userid
+        self._NorenApi__password   = password
+        self._NorenApi__susertoken = resDict['susertoken']
 
-    def get_positions(self):
-        if not self.__is_oauth:
-            return super().get_positions()
-        payload = {"uid": self._NorenApi__username, "actid": self._NorenApi__username}
-        return self.__send_oauth_request("/NorenWClientAPI/PositionBook", payload)
-
-    def get_holdings(self, product_type="C"):
-        if not self.__is_oauth:
-            return super().get_holdings()
-        payload = {
-            "uid": self._NorenApi__username,
-            "actid": self._NorenApi__username,
-            "prd": product_type,
-        }
-        return self.__send_oauth_request("/NorenWClientAPI/Holdings", payload)
-
-    def searchscrip(self, exchange, searchtext):
-        if not self.__is_oauth:
-            return super().searchscrip(exchange, searchtext)
-        payload = {
-            "uid": self._NorenApi__username,
-            "stext": searchtext,
-            "exch": exchange,
-        }
-        return self.__send_oauth_request("/NorenWClientAPI/SearchScrip", payload)
-
-    def get_order_book(self):
-        if not self.__is_oauth:
-            return super().get_order_book()
-        payload = {"uid": self._NorenApi__username}
-        return self.__send_oauth_request("/NorenWClientAPI/OrderBook", payload)
-
-    def place_order(
-        self,
-        buy_or_sell,
-        product_type,
-        exchange,
-        tradingsymbol,
-        quantity,
-        discloseqty,
-        price_type,
-        price=0.0,
-        trigger_price=None,
-        retention="DAY",
-        amo="NO",
-        remarks=None,
-        bookloss_price=0.0,
-        bookprofit_price=0.0,
-        trail_price=0.0,
-    ):
-        if not self.__is_oauth:
-            return super().place_order(
-                buy_or_sell,
-                product_type,
-                exchange,
-                tradingsymbol,
-                quantity,
-                discloseqty,
-                price_type,
-                price,
-                trigger_price,
-                retention,
-                amo,
-                remarks,
-                bookloss_price,
-                bookprofit_price,
-                trail_price,
-            )
-
-        payload = {
-            "uid": self._NorenApi__username,
-            "actid": self._NorenApi__username,
-            "trantype": buy_or_sell,
-            "prd": product_type,
-            "exch": exchange,
-            "tsym": tradingsymbol,
-            "qty": str(quantity),
-            "dscqty": str(discloseqty),
-            "prctyp": price_type,
-            "prc": str(price),
-            "ret": retention,
-            "ordersource": "API",
-        }
-        if trigger_price:
-            payload["trgprc"] = str(trigger_price)
-        if remarks:
-            payload["remarks"] = remarks
-
-        return self.__send_oauth_request("/NorenWClientAPI/PlaceOrder", payload)
-
-    def cancel_order(self, orderno):
-        if not self.__is_oauth:
-            return super().cancel_order(orderno)
-        payload = {"uid": self._NorenApi__username, "norenordno": orderno}
-        return self.__send_oauth_request("/NorenWClientAPI/CancelOrder", payload)
+        return resDict
 
 
 try:
@@ -384,34 +280,26 @@ def Shoonya_login():
         LoginMethod = str(Credential_sheet.range("B4").value)
         if (LoginMethod == "OAuth"):
             AuthCode = str(Credential_sheet.range("B13").value)
-            # According to get_oauth_code.py: B2 is User ID, B6 is App Key (API Key)
             userid = str(Credential_sheet.range("B2").value)
             app_key = str(Credential_sheet.range("B6").value)
             api_secret = str(Credential_sheet.range("B7").value)
 
-            checksum_input = f"{app_key}{api_secret}{AuthCode}"
-            checksum = hashlib.sha256(checksum_input.encode()).hexdigest()
+            print(f"Attempting OAuth Login for {userid}...")
+            # Use library method for token generation
+            token_data = api.getAccessToken(AuthCode, api_secret, app_key, userid)
 
-            url = "https://api.shoonya.com/NorenWClientAPI/GenAcsTok"
-            payload = {"code": AuthCode, "checksum": checksum}
-            payload_str = "jData=" + json.dumps(payload)
-            headers = {"Content-Type": "text/plain"}
-
-            res = requests.post(url, data=payload_str, headers=headers)
-            resDict = res.json()
-
-            if resDict.get("stat") == "Ok":
-                token = resDict.get("access_token")
-                api.set_oauth_session(userid=userid, password=password, usertoken=token)
+            if token_data:
+                access_token, usrid, ref_tok, actid = token_data
+                api.injectOAuthHeader(access_token, usrid, actid)
 
                 get_limits = api.get_limits()
                 if get_limits.get("stat") == "Ok":
-                    client_name = resDict.get("uname", userid)
+                    client_name = usrid
                     Credential_sheet.range("c2").value = (
                         "Login Successful (OAuth), Welcome "
                         + client_name
                         + "\nGenerated Token = ("
-                        + str(token)
+                        + str(access_token)
                         + ")"
                     )
                     isConnected = 1
@@ -424,8 +312,7 @@ def Shoonya_login():
                     Text2Speech("Login unsuccessful")
                     Credential_sheet.range("c2").color = (255, 0, 0)
             else:
-                error_msg = resDict.get("emsg", "Unknown error")
-                Credential_sheet.range("c2").value = "OAuth Error: " + error_msg
+                Credential_sheet.range("c2").value = "OAuth Error: Failed to get Access Token"
                 Text2Speech("Login unsuccessful")
                 Credential_sheet.range("c2").color = (255, 0, 0)
 
@@ -464,16 +351,19 @@ def Shoonya_login():
         else:
             try:
                 ExistingToken = Credential_sheet.range("B8").value
-                login_status = api.set_session(userid=userid, password=password,usertoken=ExistingToken)
+                # Assuming ExistingToken here refers to the Bearer access_token for modern OAuth flow
+                api.set_session(userid=userid, password=password, usertoken=None, accesstoken=ExistingToken)
+                api.injectOAuthHeader(ExistingToken, userid, userid)
+
                 get_limits = api.get_limits()
                 print(get_limits)
-                if(get_limits['stat'] == 'Ok'):
+                if(get_limits.get('stat') == 'Ok'):
                     Credential_sheet.range("c2").value = "Login Successful \nTool Validity : Demo" + "\nLoggedin using Token = (" + str(ExistingToken) + ")"
                     isConnected = 1
                     Credential_sheet.range('c2').color = (118,224,280)
                     Text2Speech("Login Successful")
                 else:
-                    Credential_sheet.range("c2").value = "Wrong credential \n" + str(get_limits['emsg']) +"\nPlease login using New_Session"
+                    Credential_sheet.range("c2").value = "Wrong credential \n" + str(get_limits.get('emsg')) +"\nPlease login using New_Session"
                     Text2Speech("Login unsuccessful")
                     Credential_sheet.range('c2').color = (255, 0, 0)
             except Exception as e:
