@@ -83,6 +83,19 @@ class ShoonyaApiPy(NorenApi):
             websocket="wss://api.shoonya.com/NorenWSTP/",
         )
 
+    def _NorenApi__on_open_callback(self, ws=None):
+        """Override private handshake to use Shoonya's required format"""
+        self._NorenApi__websocket_connected = True
+        # Shoonya servers typically expect 'c' for connection handshake and 'susertoken'
+        values = {"t": "c"}
+        values["uid"] = self._NorenApi__username
+        values["actid"] = self._NorenApi__accountid
+        values["susertoken"] = self._NorenApi__susertoken
+        values["source"] = "API"
+
+        payload = json.dumps(values)
+        self._NorenApi__ws_send(payload)
+
     def login(self, userid, password, twoFA, vendor_code, api_secret, imei, access_type=None):
         # Restore login method since it is commented out in the library
         config = self._NorenApi__service_config
@@ -108,10 +121,11 @@ class ShoonyaApiPy(NorenApi):
         # Use public methods to set state safely
         susertoken = resDict.get("susertoken")
         access_token = resDict.get("access_token")
+        actid = resDict.get("actid", userid)
 
         self.set_session(userid, password, susertoken, access_token)
         if access_token:
-            self.injectOAuthHeader(access_token, userid, userid)
+            self.injectOAuthHeader(access_token, userid, actid)
 
         return resDict
 
@@ -356,10 +370,11 @@ def Shoonya_login():
                 client_name = login_status.get("uname")
                 susertoken = login_status.get("susertoken")
                 access_token = login_status.get("access_token")
+                actid = login_status.get("actid", userid)
 
                 # If Bearer token is present, use it
                 if access_token:
-                    api.injectOAuthHeader(access_token, userid, userid)
+                    api.injectOAuthHeader(access_token, userid, actid)
                     token_to_display = access_token
                 else:
                     token_to_display = susertoken
