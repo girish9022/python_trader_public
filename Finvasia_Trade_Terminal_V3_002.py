@@ -25,11 +25,16 @@ excel_lock = threading.Lock()
 def ensure(pkgs):
     for name, pip_name in pkgs:
         try:
-            importlib.import_module(name)
+            pkg = importlib.import_module(name)
+            # Force upgrade to OAuth version if it's the old library
+            if name == "NorenRestApiPy" and pip_name == "NorenRestApiOAuth":
+                # Basic check: NorenRestApiPy v0.0.22 doesn't have injectOAuthHeader
+                if not hasattr(pkg.NorenApi, "injectOAuthHeader"):
+                    raise ImportError("Legacy NorenRestApiPy detected")
             print(f"✅ {name} ok")
         except ImportError:
-            print(f"⚠️ {name} missing → installing {pip_name}...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+            print(f"⚠️ {name} missing or outdated → installing {pip_name}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pip_name])
 
 # -----------------------
 # USAGE
@@ -58,6 +63,7 @@ from time import sleep
 import logging
 from threading import Thread
 import numpy as np
+
 if not hasattr(np, "NaN"):
     np.NaN = np.nan
 
@@ -81,28 +87,31 @@ class ShoonyaApiPy(NorenApi):
         # Restore login method since it is commented out in the library
         config = self._NorenApi__service_config
         url = f"{config['host']}{config['routes']['authorize']}"
-        pwd = hashlib.sha256(password.encode('utf-8')).hexdigest()
-        u_appkey = '{0}|{1}'.format(userid, api_secret)
-        appkey = hashlib.sha256(u_appkey.encode('utf-8')).hexdigest()
+        pwd = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        u_appkey = "{0}|{1}".format(userid, api_secret)
+        appkey = hashlib.sha256(u_appkey.encode("utf-8")).hexdigest()
 
-        values = { "source": access_type or "API" , "apkversion": "1.0.0"}
-        values["uid"]       = userid
-        values["pwd"]       = pwd
-        values["factor2"]   = twoFA
-        values["vc"]        = vendor_code
-        values["appkey"]    = appkey
-        values["imei"]      = imei
+        values = {"source": access_type or "API", "apkversion": "1.0.0"}
+        values["uid"] = userid
+        values["pwd"] = pwd
+        values["factor2"] = twoFA
+        values["vc"] = vendor_code
+        values["appkey"] = appkey
+        values["imei"] = imei
 
-        payload = 'jData=' + json.dumps(values)
+        payload = "jData=" + json.dumps(values)
         res = requests.post(url, data=payload)
         resDict = json.loads(res.text)
-        if resDict.get('stat') != 'Ok':
+        if resDict.get("stat") != "Ok":
             return resDict
 
-        self._NorenApi__username   = userid
-        self._NorenApi__accountid  = userid
-        self._NorenApi__password   = password
-        self._NorenApi__susertoken = resDict['susertoken']
+        # Use public methods to set state safely
+        susertoken = resDict.get("susertoken")
+        access_token = resDict.get("access_token")
+
+        self.set_session(userid, password, susertoken, access_token)
+        if access_token:
+            self.injectOAuthHeader(access_token, userid, userid)
 
         return resDict
 
@@ -183,6 +192,14 @@ Text2Speech("Welcome to python trader trade terminal tool, have a nice day. Hope
 
 
 def Shoonya_login():
+    def clean_val(val):
+        if val is None:
+            return ""
+        s = str(val).strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        return s
+
     global api
     global TelegramBotCredential, ReceiverTelegramID
     global logger
@@ -238,7 +255,7 @@ def Shoonya_login():
     Credential_sheet.range('b15:b16').color = (220,214,32)
 
     try:
-        userid = Credential_sheet.range("B2").value
+        userid = clean_val(Credential_sheet.range("B2").value)
 
         Timestamp = dt.now().strftime("%d%m%Y_%H%M%S")
 
@@ -262,27 +279,19 @@ def Shoonya_login():
         api = ShoonyaApiPy()
 
 
-        TelegramBotCredential = str(Credential_sheet.range("b10").value)
-        ReceiverTelegramID = str(Credential_sheet.range("b11").value)
-        index = ReceiverTelegramID.find(".")
-        if index != -1:
-            ReceiverTelegramID = ReceiverTelegramID[:len(ReceiverTelegramID)-2]
+        TelegramBotCredential = clean_val(Credential_sheet.range("b10").value)
+        ReceiverTelegramID = clean_val(Credential_sheet.range("b11").value)
 
         print(f"TelegramBotCredential= ({TelegramBotCredential}), ReceiverTelegramID=({ReceiverTelegramID})")
 
 
-        password = str(Credential_sheet.range("B3").value)
+        password = clean_val(Credential_sheet.range("B3").value)
+        LoginMethod = clean_val(Credential_sheet.range("B4").value)
 
-        index = password.find(".")
-        if index != -1:
-            password = password[:len(password)-2]
-
-        LoginMethod = str(Credential_sheet.range("B4").value)
         if (LoginMethod == "OAuth"):
-            AuthCode = str(Credential_sheet.range("B13").value)
-            userid = str(Credential_sheet.range("B2").value)
-            app_key = str(Credential_sheet.range("B6").value)
-            api_secret = str(Credential_sheet.range("B7").value)
+            AuthCode = clean_val(Credential_sheet.range("B13").value)
+            app_key = clean_val(Credential_sheet.range("B6").value)
+            api_secret = clean_val(Credential_sheet.range("B7").value)
 
             print(f"Attempting OAuth Login for {userid}...")
             # Use library method for token generation
@@ -317,16 +326,18 @@ def Shoonya_login():
                 Credential_sheet.range("c2").color = (255, 0, 0)
 
         elif (LoginMethod == "New_Session"):
-            TotpKey = str(Credential_sheet.range('B5').value)
-            index = TotpKey.find(".")
-            if index != -1:
-                twoFA = int(TotpKey[:6])
+            TotpKey = clean_val(Credential_sheet.range('B5').value)
+            if TotpKey.isdigit() and len(TotpKey) == 6:
+                twoFA = TotpKey
             else:
-                pin = pyotp.TOTP(TotpKey).now()
-                twoFA = f"{int(pin):06d}" if len(pin) <=5 else pin
+                try:
+                    pin = pyotp.TOTP(TotpKey).now()
+                    twoFA = f"{int(pin):06d}" if len(pin) <=5 else pin
+                except Exception:
+                    twoFA = TotpKey
 
-            vendor_code = Credential_sheet.range("B6").value
-            api_secret = Credential_sheet.range("B7").value
+            vendor_code = clean_val(Credential_sheet.range("B6").value)
+            api_secret = clean_val(Credential_sheet.range("B7").value)
             imei = "abcd1234"
 
             print(
@@ -334,36 +345,59 @@ def Shoonya_login():
             )
             login_status = api.login(
                 userid=userid,
-                password=str(password),
+                password=password,
                 twoFA=str(twoFA),
                 vendor_code=vendor_code,
                 api_secret=api_secret,
                 imei=imei,
             )
 
-            client_name = login_status.get("uname")
-            token = login_status.get('susertoken')
-            print(login_status)
-            Credential_sheet.range("c2").value = "Login Successful, Welcome " + client_name + "\nTool Validity : Demo" + "\nGenerated Token = (" + str(token) + ")"
-            isConnected = 1
-            Text2Speech("Login Successful, Welcome " + str(client_name) )
-            Credential_sheet.range('c2').color = (118,224,280)
+            if login_status and login_status.get("stat") == "Ok":
+                client_name = login_status.get("uname")
+                susertoken = login_status.get("susertoken")
+                access_token = login_status.get("access_token")
+
+                # If Bearer token is present, use it
+                if access_token:
+                    api.injectOAuthHeader(access_token, userid, userid)
+                    token_to_display = access_token
+                else:
+                    token_to_display = susertoken
+
+                print(login_status)
+                Credential_sheet.range("c2").value = (
+                    "Login Successful, Welcome "
+                    + str(client_name)
+                    + "\nTool Validity : Demo"
+                    + "\nGenerated Token = ("
+                    + str(token_to_display)
+                    + ")"
+                )
+                isConnected = 1
+                Text2Speech("Login Successful, Welcome " + str(client_name))
+                Credential_sheet.range("c2").color = (118, 224, 280)
+            else:
+                emsg = login_status.get("emsg") if login_status else "Unknown Error"
+                Credential_sheet.range("c2").value = "Login Failed: " + str(emsg)
+                Text2Speech("Login unsuccessful")
+                Credential_sheet.range("c2").color = (255, 0, 0)
         else:
             try:
-                ExistingToken = Credential_sheet.range("B8").value
+                ExistingToken = clean_val(Credential_sheet.range("B8").value)
                 # Assuming ExistingToken here refers to the Bearer access_token for modern OAuth flow
                 api.set_session(userid=userid, password=password, usertoken=None, accesstoken=ExistingToken)
                 api.injectOAuthHeader(ExistingToken, userid, userid)
 
                 get_limits = api.get_limits()
                 print(get_limits)
-                if(get_limits.get('stat') == 'Ok'):
+                if get_limits and get_limits.get('stat') == 'Ok':
                     Credential_sheet.range("c2").value = "Login Successful \nTool Validity : Demo" + "\nLoggedin using Token = (" + str(ExistingToken) + ")"
                     isConnected = 1
                     Credential_sheet.range('c2').color = (118,224,280)
                     Text2Speech("Login Successful")
                 else:
-                    Credential_sheet.range("c2").value = "Wrong credential \n" + str(get_limits.get('emsg')) +"\nPlease login using New_Session"
+                    emsg = get_limits.get('emsg') if get_limits else "Unknown Error"
+                    Credential_sheet.range("c2").value = "Wrong credential \n" + str(emsg) +"\nPlease login using New_Session"
                     Text2Speech("Login unsuccessful")
                     Credential_sheet.range('c2').color = (255, 0, 0)
             except Exception as e:
